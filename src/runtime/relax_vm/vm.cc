@@ -29,6 +29,9 @@
 
 #include <optional>
 #include <thread>
+#include <sstream>
+#include <regex>
+#include <iterator>
 
 namespace tvm {
 namespace runtime {
@@ -223,6 +226,9 @@ class VirtualMachineImpl : public VirtualMachine {
   int _GetFunctionArity(std::string func_name);
   std::string _GetFunctionParamName(std::string func_name, int index);
   PackedFunc _LookupFunction(const String& name);
+  int _RunSegment(const int segment_id); // HayeonP
+  String _GetSegmentsInfoSkeleton(); // HayeonP
+  int _InitSegments(std::string segments_info_str); // HayeonP
 
   TVM_MODULE_VTABLE_BEGIN("relax.VirtualMachine");
   TVM_MODULE_VTABLE_ENTRY_PACKED("vm_initialization", &VirtualMachineImpl::_Init);
@@ -237,6 +243,9 @@ class VirtualMachineImpl : public VirtualMachine {
                                  &VirtualMachineImpl::_SetInputWithParamModule);
   TVM_MODULE_VTABLE_ENTRY("get_function_arity", &VirtualMachineImpl::_GetFunctionArity);
   TVM_MODULE_VTABLE_ENTRY("get_function_param_name", &VirtualMachineImpl::_GetFunctionParamName);
+  TVM_MODULE_VTABLE_ENTRY("run_segment", &VirtualMachineImpl::_RunSegment); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY("get_segments_info_skeleton", &VirtualMachineImpl::_GetSegmentsInfoSkeleton); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY("init_segments", &VirtualMachineImpl::_InitSegments); // HayeonP
   TVM_MODULE_VTABLE_END_WITH_DEFAULT(&VirtualMachineImpl::_LookupFunction);
 
   //--------------------------------------------------
@@ -460,6 +469,10 @@ class VirtualMachineImpl : public VirtualMachine {
   RegType return_value_;
   /*!\ brief instrument function. */
   PackedFunc instrument_ = nullptr;
+
+  // HayeonP
+  /*! \brief Segments initialization flag */ 
+  bool are_segments_initialized_ = false; 
 };
 
 void VirtualMachineImpl::LoadExecutable(ObjectPtr<VMExecutable> exec) {
@@ -733,6 +746,7 @@ void VirtualMachineImpl::InitFuncPool() {
 
 void VirtualMachineImpl::RunInstrCall(VMFrame* curr_frame, Instruction instr) {
   DLOG(INFO) << "\n  pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx);
+  // std::cout<<"[DEBUG] \n  pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx) << std::endl;
   int args_begin_offset = instrument_ != nullptr ? 4 : 0;
   // Use the call arg stack from the current frame to increase reuse
   // and avoid re-allocation
@@ -820,7 +834,7 @@ void VirtualMachineImpl::RunInstrCall(VMFrame* curr_frame, Instruction instr) {
 void VirtualMachineImpl::RunLoop() {
   VMFrame* curr_frame = frames_.back().get();
 
-  while (true) {
+  while (true) {    
     ICHECK_LT(static_cast<size_t>(pc_), exec_->instr_offset.size()) << "run into invalid section";
     Instruction instr = exec_->GetInstruction(pc_);
     switch (instr.op) {
@@ -967,6 +981,201 @@ std::string VirtualMachineImpl::_GetFunctionParamName(std::string func_name, int
                << vm_func.param_names.size() << ")";
   }
   return vm_func.param_names[index];
+}
+
+// HayeonP
+String VirtualMachineImpl::_GetSegmentsInfoSkeleton(){
+  std::string output_str;
+  
+  auto it = exec_->func_map.find("main");
+  if (it == exec_->func_map.end()) {
+    LOG(FATAL) << "ValueError: Cannot find main function";    
+    return output_str;
+  }
+
+  Index gf_idx = it->second;
+  const VMFuncInfo& gfunc = exec_->func_table[gf_idx];
+  auto guard = PushFrame(this->pc_, gfunc);
+  VMFrame* curr_frame = frames_.back().get();
+
+  pc_ = gfunc.start_instr;
+
+  bool is_finished = false;
+  while (!is_finished) {
+    Instruction instr = exec_->GetInstruction(pc_);
+    switch (instr.op) {
+      case Opcode::Call: {
+        std::ostringstream oss;
+        oss << "pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx) << std::endl;
+        output_str += oss.str();
+        pc_++;
+        break;
+      }
+      case Opcode::Ret: {
+        is_finished = true;
+        break;
+      }
+      case Opcode::Goto: {
+        pc_ += instr.pc_offset;
+        break;
+      }
+      case Opcode::If: {
+        int64_t cond_val = ReadRegister(curr_frame, instr.cond);
+        if (cond_val != 0) {
+          pc_++;
+        } else {
+          ICHECK_GT(instr.false_offset, 1);
+          pc_ += instr.false_offset;
+        }
+        break;
+      }
+    }
+  }
+
+  return output_str;
+}
+
+// HayeonP
+int VirtualMachineImpl::_InitSegments(std::string segments_info){
+  std::cout<<"## segments_info ##################"<<std::endl;
+  
+  if(segments_info.empty()){
+    std::cout<<"SegmentsInfoParsingError: segments_info is empty"<<std::endl;
+    return -1;
+  }
+
+  struct SegmentsInfoLine {
+    std::string raw;
+    std::string trimmed;
+  };
+
+  // Preprocessing (trimming, remove empty lines)
+  std::istringstream iss(segments_info);
+  std::string line;  
+  std::vector<SegmentsInfoLine> segements_info_lines;
+  while (std::getline(iss, line)) {
+    std::string trimmed;
+    if (line.empty()) continue;
+
+    size_t trim_start = 0;
+    while (trim_start < line.size() && std::isspace(line[trim_start])) {
+        trim_start++;
+    }
+    size_t trim_end = line.size() - 1;
+    while (trim_end > trim_start && std::isspace(line[trim_end])) {
+        trim_end--;
+    }
+    trimmed = line.substr(trim_start, trim_end - trim_start + 1);
+
+    if(!trimmed.empty()){
+      segements_info_lines.push_back({line, trimmed});
+    }
+  }
+
+  // Front-end validation
+  if(segements_info_lines.front().trimmed != "@seg"){
+    std::cout<<"SegmentsInfoParsingError: Does not start with @seg annotator"<<std::endl;
+    return -1;
+  }
+
+  if(segements_info_lines.back().trimmed != "@seg"){
+    std::cout<<"SegmentsInfoParsingError: Does not end with @seg annotator"<<std::endl;
+    return -1;
+  }
+
+  // Parsing
+  std::vector< std::vector<int> > per_segment_pc_list;
+  std::regex pattern(R"(pc\s*=\s*(\d+))");
+  for(auto it = segements_info_lines.begin(); it != segements_info_lines.end(); it++){    
+    std::string line = (*it).trimmed;
+    if(line == "@seg"){
+      per_segment_pc_list.push_back(std::vector<int>());
+      continue;
+    }
+
+    int pc;
+    std::smatch matches;
+    auto begin = std::sregex_iterator(line.begin(), line.end(), pattern);
+    auto end = std::sregex_iterator();
+    int count = std::distance(begin, end);
+
+    if(count == 0){
+        std::cout << "SegmentsInfoParsingError: No program counter found in a line: \"" << (*it).raw << "\"" << std::endl;
+        return -1;
+    }
+
+    if(count > 1){
+        std::cout << "SegmentsInfoParsingError: Multiple program counters in a line: \"" << (*it).raw << "\"" << std::endl;
+        return -1;
+    } 
+
+    std::regex_search(line, matches, pattern);
+    pc = std::stoi(matches[1].str());
+    
+    per_segment_pc_list.back().push_back(pc);
+  }
+
+  if(per_segment_pc_list.back().empty()){
+    per_segment_pc_list.pop_back();
+  }
+
+  // for(auto it1 = per_segment_pc_list.begin(); it1 != per_segment_pc_list.end(); it1++){
+  //   auto segment_pc_list = *it1;
+  //   std::cout<<"SEGMENT"<<std::endl;
+  //   for(auto it2 = segment_pc_list.begin(); it2 != segment_pc_list.end(); it2++){
+  //     std::cout<<*it2<<std::endl;
+  //   }
+  // }
+
+  return 0;
+}
+
+// HayeonP
+std::string trim(const std::string& str) {
+    if (str.empty()) return "";
+    
+    size_t start = 0;
+    while (start < str.size() && std::isspace(str[start])) {
+        start++;
+    }
+    
+    size_t end = str.size() - 1;
+    while (end > start && std::isspace(str[end])) {
+        end--;
+    }
+    
+    return str.substr(start, end - start + 1);
+}
+
+// HayeonP
+int VirtualMachineImpl::_RunSegment(const int segment_id) {
+  // TODO
+  static int prev_segment_id = -1;
+  static int segment_length = 10;
+  
+  // TODO: Validate initialization
+  if(!are_segments_initialized_){
+    std::cout<<"SegmentsInitializationError: Segments need to be initialized"<<std::endl;
+    return -1;
+  }
+
+  if(segment_id > segment_length - 1){
+    std::cout<<"InvalidSegmentIdError: Segment id is bigger than length (segment_id: "<<segment_id<<", length: "<<segment_length<<")"<<std::endl;
+    return -1;
+  }
+
+  if(segment_id > prev_segment_id + 1){
+    std::cout<<"SegmentSkipWarning: Segment is skipped (segment_id: "<<segment_id<<", prev_segment_id: "<<prev_segment_id <<")"<<std::endl;
+  }
+
+  if(segment_id == segment_length - 1){
+    prev_segment_id = -1;
+    std::cout<<"Segment reaches the end"<<std::endl;
+  }
+
+  prev_segment_id = segment_id;
+
+  return segment_id;
 }
 
 PackedFunc VirtualMachineImpl::_LookupFunction(const String& name) {
