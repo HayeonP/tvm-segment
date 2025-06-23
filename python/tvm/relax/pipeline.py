@@ -171,17 +171,17 @@ def static_shape_tuning_pipeline(
         with tvm.target.Target(target):
             mod = tvm.transform.Sequential(
                 [
-                    transform.DecomposeOpsForInference(),
-                    transform.CanonicalizeBindings(),
-                    zero_pipeline(),
-                    *pre_tuning_layout_rewrite,
+                    transform.DecomposeOpsForInference(), #@ 복잡한 연산 분해
+                    transform.CanonicalizeBindings(), #@ 표현식 단순화
+                    zero_pipeline(),                  #@ zero pipeline: 기본적인 op legalize, constant folding, op fusion 등 수행
+                    *pre_tuning_layout_rewrite,       #@ CPU prepack 튜닝 전 path
                     # Skip tuning if total_trials is 0
                     (
-                        transform.MetaScheduleTuneIRMod({}, work_dir, total_trials)
+                        transform.MetaScheduleTuneIRMod({}, work_dir, total_trials) #@ 실제 meta schedule 튜닝 수행
                         if total_trials > 0
-                        else tvm.transform.Sequential([])
+                        else tvm.transform.Sequential([]) 
                     ),
-                    transform.MetaScheduleApplyDatabase(work_dir),
+                    transform.MetaScheduleApplyDatabase(work_dir), #@ Best schedule을 DB에 적용
                     *post_tuning_layout_rewrite,
                 ]
             )(mod)

@@ -225,10 +225,14 @@ class VirtualMachineImpl : public VirtualMachine {
   void _SetInputWithParamModule(TVMArgs args, TVMRetValue* rv);
   int _GetFunctionArity(std::string func_name);
   std::string _GetFunctionParamName(std::string func_name, int index);
+  
   PackedFunc _LookupFunction(const String& name);
-  int _RunSegment(const int segment_id); // HayeonP
-  String _GetSegmentsInfoSkeleton(); // HayeonP
-  int _InitSegments(std::string segments_info_str); // HayeonP
+  String _SegmentRunnerGetSkeleton(); // HayeonP
+
+  int _SegmentRunnerLoad(std::string segments_info_str); // HayeonP
+  void _SegmentRunnerSetInput(TVMArgs args, TVMRetValue* rv); // HayeonP
+  int _SegmentRunnerRun(const int segment_id); // HayeonP
+  void _SegmentRunnerGetOutput(TVMArgs args, TVMRetValue* rv); // HayeonP
 
   TVM_MODULE_VTABLE_BEGIN("relax.VirtualMachine");
   TVM_MODULE_VTABLE_ENTRY_PACKED("vm_initialization", &VirtualMachineImpl::_Init);
@@ -243,9 +247,11 @@ class VirtualMachineImpl : public VirtualMachine {
                                  &VirtualMachineImpl::_SetInputWithParamModule);
   TVM_MODULE_VTABLE_ENTRY("get_function_arity", &VirtualMachineImpl::_GetFunctionArity);
   TVM_MODULE_VTABLE_ENTRY("get_function_param_name", &VirtualMachineImpl::_GetFunctionParamName);
-  TVM_MODULE_VTABLE_ENTRY("run_segment", &VirtualMachineImpl::_RunSegment); // HayeonP
-  TVM_MODULE_VTABLE_ENTRY("get_segments_info_skeleton", &VirtualMachineImpl::_GetSegmentsInfoSkeleton); // HayeonP
-  TVM_MODULE_VTABLE_ENTRY("init_segments", &VirtualMachineImpl::_InitSegments); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY("segment_runner.get_skeleton", &VirtualMachineImpl::_SegmentRunnerGetSkeleton); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY("segment_runner.load", &VirtualMachineImpl::_SegmentRunnerLoad); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY_PACKED("segment_runner.set_input", &VirtualMachineImpl::_SegmentRunnerSetInput); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY("segment_runner.run", &VirtualMachineImpl::_SegmentRunnerRun); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY_PACKED("segment_runner.get_output", &VirtualMachineImpl::_SegmentRunnerGetOutput); // HayeonP
   TVM_MODULE_VTABLE_END_WITH_DEFAULT(&VirtualMachineImpl::_LookupFunction);
 
   //--------------------------------------------------
@@ -471,8 +477,10 @@ class VirtualMachineImpl : public VirtualMachine {
   PackedFunc instrument_ = nullptr;
 
   // HayeonP
-  /*! \brief Segments initialization flag */ 
-  bool are_segments_initialized_ = false; 
+  /*! \brief List whose entry is program counters for a segment */ 
+  std::vector< std::vector<int> > per_segment_pc_list_;
+  bool are_segments_initialized_ = false;
+  std::unique_ptr<VMFrame> segments_frame_ = NULL;
 };
 
 void VirtualMachineImpl::LoadExecutable(ObjectPtr<VMExecutable> exec) {
@@ -708,6 +716,7 @@ RegType VirtualMachineImpl::InvokeBytecode(Index gf_idx, const std::vector<RegTy
         }
         return ss.str();
       }() << ", but " << args.size() << " arguments were provided.";
+
   for (size_t i = 0; i < args.size(); ++i) {
     WriteRegister(frames_.back().get(), i, args[i]);
   }
@@ -746,7 +755,8 @@ void VirtualMachineImpl::InitFuncPool() {
 
 void VirtualMachineImpl::RunInstrCall(VMFrame* curr_frame, Instruction instr) {
   DLOG(INFO) << "\n  pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx);
-  // std::cout<<"[DEBUG] \n  pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx) << std::endl;
+  // std::cout<<  "\n  pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx) << std::endl;
+  
   int args_begin_offset = instrument_ != nullptr ? 4 : 0;
   // Use the call arg stack from the current frame to increase reuse
   // and avoid re-allocation
@@ -814,6 +824,7 @@ void VirtualMachineImpl::RunInstrCall(VMFrame* curr_frame, Instruction instr) {
     if (rv.type_code() == kDLInt) {
       ret_kind = rv;
     }
+
     if (ret_kind != static_cast<int>(VMInstrumentReturnKind::kSkipRun)) {
       this->InvokeClosurePacked(func_pool_[instr.func_idx], args, &ret);
       setter(2, false);
@@ -822,18 +833,20 @@ void VirtualMachineImpl::RunInstrCall(VMFrame* curr_frame, Instruction instr) {
     }
   }
 
+
   // save the return value to the register
   // saving to special register is a NOP
   if (instr.dst < Instruction::kBeginSpecialReg) {
     WriteRegister(curr_frame, instr.dst, ret);
   }
+
   // increment pc
   pc_++;
 }
 
 void VirtualMachineImpl::RunLoop() {
   VMFrame* curr_frame = frames_.back().get();
-
+  
   while (true) {    
     ICHECK_LT(static_cast<size_t>(pc_), exec_->instr_offset.size()) << "run into invalid section";
     Instruction instr = exec_->GetInstruction(pc_);
@@ -984,7 +997,7 @@ std::string VirtualMachineImpl::_GetFunctionParamName(std::string func_name, int
 }
 
 // HayeonP
-String VirtualMachineImpl::_GetSegmentsInfoSkeleton(){
+String VirtualMachineImpl::_SegmentRunnerGetSkeleton(){
   std::string output_str;
   
   auto it = exec_->func_map.find("main");
@@ -1036,9 +1049,7 @@ String VirtualMachineImpl::_GetSegmentsInfoSkeleton(){
 }
 
 // HayeonP
-int VirtualMachineImpl::_InitSegments(std::string segments_info){
-  std::cout<<"## segments_info ##################"<<std::endl;
-  
+int VirtualMachineImpl::_SegmentRunnerLoad(std::string segments_info){
   if(segments_info.empty()){
     std::cout<<"SegmentsInfoParsingError: segments_info is empty"<<std::endl;
     return -1;
@@ -1084,12 +1095,11 @@ int VirtualMachineImpl::_InitSegments(std::string segments_info){
   }
 
   // Parsing
-  std::vector< std::vector<int> > per_segment_pc_list;
   std::regex pattern(R"(pc\s*=\s*(\d+))");
   for(auto it = segements_info_lines.begin(); it != segements_info_lines.end(); it++){    
     std::string line = (*it).trimmed;
     if(line == "@seg"){
-      per_segment_pc_list.push_back(std::vector<int>());
+      per_segment_pc_list_.push_back(std::vector<int>());
       continue;
     }
 
@@ -1112,14 +1122,14 @@ int VirtualMachineImpl::_InitSegments(std::string segments_info){
     std::regex_search(line, matches, pattern);
     pc = std::stoi(matches[1].str());
     
-    per_segment_pc_list.back().push_back(pc);
+    per_segment_pc_list_.back().push_back(pc);
   }
 
-  if(per_segment_pc_list.back().empty()){
-    per_segment_pc_list.pop_back();
+  if(per_segment_pc_list_.back().empty()){
+    per_segment_pc_list_.pop_back();
   }
 
-  // for(auto it1 = per_segment_pc_list.begin(); it1 != per_segment_pc_list.end(); it1++){
+  // for(auto it1 = per_segment_pc_list_.begin(); it1 != per_segment_pc_list_.end(); it1++){
   //   auto segment_pc_list = *it1;
   //   std::cout<<"SEGMENT"<<std::endl;
   //   for(auto it2 = segment_pc_list.begin(); it2 != segment_pc_list.end(); it2++){
@@ -1127,38 +1137,89 @@ int VirtualMachineImpl::_InitSegments(std::string segments_info){
   //   }
   // }
 
-  return 0;
-}
-
-// HayeonP
-std::string trim(const std::string& str) {
-    if (str.empty()) return "";
-    
-    size_t start = 0;
-    while (start < str.size() && std::isspace(str[start])) {
-        start++;
-    }
-    
-    size_t end = str.size() - 1;
-    while (end > start && std::isspace(str[end])) {
-        end--;
-    }
-    
-    return str.substr(start, end - start + 1);
-}
-
-// HayeonP
-int VirtualMachineImpl::_RunSegment(const int segment_id) {
-  // TODO
-  static int prev_segment_id = -1;
-  static int segment_length = 10;
   
-  // TODO: Validate initialization
-  if(!are_segments_initialized_){
-    std::cout<<"SegmentsInitializationError: Segments need to be initialized"<<std::endl;
+  are_segments_initialized_ = true;
+
+  auto func_main_it = exec_->func_map.find("main");
+  if (func_main_it == exec_->func_map.end()) {
+    LOG(FATAL) << "ValueError: Cannot find main function";    
     return -1;
   }
 
+  auto main_it = exec_->func_map.find("main");
+  Index main_func_idx = main_it->second;
+  const VMFuncInfo& main_func = exec_->func_table[main_func_idx];
+  pc_ = main_func.start_instr;
+
+  segments_frame_ = std::make_unique<VMFrame>(main_func_idx, main_func.register_file_size);
+  VMFrame* curr_frame = segments_frame_.get();
+
+  return per_segment_pc_list_.size();
+}
+
+// HayeonP
+void VirtualMachineImpl::_SegmentRunnerSetInput(TVMArgs args, TVMRetValue* rv){
+  if(!segments_frame_){
+    std::cout<<"InvalidSegmentsFrame: segments_frame doesn't exist"<<std::endl;
+    *rv = -1;
+  }
+
+  std::vector<RegType> input(args.size() - 1);
+  for (size_t i = 0; i < input.size(); ++i) {
+        input[i] = args[i + 1];
+  }
+
+  VMFrame* curr_frame = segments_frame_.get();
+  for(size_t i = 0; i < input.size(); ++i) {
+    WriteRegister(curr_frame, i, input[i]);
+  }
+
+  *rv = 0;
+
+  return;
+}
+
+// HayeonP
+void VirtualMachineImpl::_SegmentRunnerGetOutput(TVMArgs args, TVMRetValue* rv){
+  Instruction instr = exec_->GetInstruction(pc_);
+
+  if(instr.op != Opcode::Ret) {
+    std::cout<<"OutputError: Inference isn't finished"<<std::endl;
+  }
+  
+  // If we have hit the point from which we started
+  // running, we should return to the caller breaking
+  // the dispatch loop.
+  VMFrame* curr_frame = segments_frame_.get();
+  return_value_ = ReadRegister(curr_frame, instr.result);
+
+  RegName caller_return_register = curr_frame->caller_return_register;
+  if (frames_.size() <= 1) {
+    // directly return if no other frame in the call stack.
+  } else {
+    // return from a local call.
+    // Update the current frame to be the parent frame.
+    VMFrame* parent_frame = frames_.end()[-2].get();
+    WriteRegister(parent_frame, caller_return_register, return_value_);
+  }
+
+  *rv = return_value_;
+
+  return;
+}
+
+// HayeonP
+int VirtualMachineImpl::_SegmentRunnerRun(const int segment_id) {
+  if(!are_segments_initialized_){
+    std::cout<<"RunSegmentError: Segments are not initialized"<<std::endl;
+    return -1;
+  }
+
+  VMFrame* curr_frame = segments_frame_.get();
+
+  static int prev_segment_id = -1;
+  int segment_length = per_segment_pc_list_.size();
+  
   if(segment_id > segment_length - 1){
     std::cout<<"InvalidSegmentIdError: Segment id is bigger than length (segment_id: "<<segment_id<<", length: "<<segment_length<<")"<<std::endl;
     return -1;
@@ -1168,9 +1229,41 @@ int VirtualMachineImpl::_RunSegment(const int segment_id) {
     std::cout<<"SegmentSkipWarning: Segment is skipped (segment_id: "<<segment_id<<", prev_segment_id: "<<prev_segment_id <<")"<<std::endl;
   }
 
+  
+  for(auto it = per_segment_pc_list_[segment_id].begin(); it != per_segment_pc_list_[segment_id].end(); it++){
+    pc_ = *it;
+    ICHECK_LT(static_cast<size_t>(pc_), exec_->instr_offset.size()) << "run into invalid section";
+    Instruction instr = exec_->GetInstruction(pc_);
+
+    switch (instr.op) {
+      case Opcode::Call: {
+        this->RunInstrCall(curr_frame, instr);
+        break;
+      }
+      case Opcode::Ret: {
+        std::cout<<"RunSegmentError: Reached a return before execution was completed"<<std::endl;
+        
+        return -1;
+      }
+      case Opcode::Goto: {
+        pc_ += instr.pc_offset;
+        break;
+      }
+      case Opcode::If: {
+        int64_t cond_val = ReadRegister(curr_frame, instr.cond);
+        if (cond_val != 0) {
+          pc_++;
+        } else {
+          ICHECK_GT(instr.false_offset, 1);
+          pc_ += instr.false_offset;
+        }
+        break;
+      }
+    }
+  }
+
   if(segment_id == segment_length - 1){
     prev_segment_id = -1;
-    std::cout<<"Segment reaches the end"<<std::endl;
   }
 
   prev_segment_id = segment_id;

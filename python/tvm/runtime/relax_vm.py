@@ -126,6 +126,27 @@ class VirtualMachine(object):
     def __getitem__(self, key: str) -> PackedFunc:
         return self.module[key]
 
+    # HayeonP
+    # def run_segment(self, segment_id: int) -> int:
+    #     ret = self.module["run_segment"](segment_id)
+    #     return ret 
+    
+    # def init_segments(self, segments_info: str) -> int:
+    #     ret = self.module["init_segments"](segments_info)        
+    #     return ret
+    
+    # def set_input_for_segments(self, input, *params):
+    #     self.module["set_input_for_segments"]("main", input, *params)
+    #     return
+    
+    # def get_output_from_segments(self):
+    #     ret = self.module["get_output_from_segments"]()
+    #     return ret
+    
+    def get_segments_skeleton(self) -> str:
+        ret = self.module["get_segments_skeleton"]()
+        return ret        
+
     def invoke_closure(self, closure: Object, *args: Any) -> Object:
         """Invoke a closure.
 
@@ -498,7 +519,93 @@ class VirtualMachine(object):
         report_json = self.module["profile"](func_name, *cargs)
         return Report.from_json(report_json)
 
+class SegmentRunner(object):
+    def __init__(self,
+                 vm: VirtualMachine):
+        self.module = vm.module
+        
+        return
+    
+    """
+    Load segments information. Load segments information.
+    Each segment must be marked with the @seg annotation before the first and after the last bytecode function of the segment.
+    * @seg: Annotation that indicates the separation of each segment.
 
+    Parameters
+    ----------
+    segments_info: str
+        Segments information includes segment annotations and bytecode
+
+    Returns
+    -------
+    ret:
+        Return length of segments. If it failed, it returns -1.
+    """
+    def load(self, segments_info: str):
+        ret = self.module["segment_runner.load"](segments_info)
+        return ret
+
+    """
+    Set input for segment runner.
+
+    Parameters
+    ----------
+    input:
+        Input data for inference
+    *params:
+        Parameters (= weights)
+
+    Returns
+    -------
+    ret:
+        0 for success, -1 for failure.
+    """
+    def set_input(self, input, *params):
+        self.module["segment_runner.set_input"]("main", input, *params)
+        return
+
+    """
+    Get output from the segment runner
+
+    Returns
+    -------
+    ret:
+        Inference result
+    """
+    def get_output(self):        
+        ret = self.module["segment_runner.get_output"]()
+        return ret
+    
+    """
+    Get a skeleton of the given DL model. The skeleton includes program counters and corresponding bytecode functions.
+    These skeleton can be used for writing segments information.
+
+    Returns
+    -------
+    ret:
+        The skeleton of the given DL model 
+    """
+    def get_skeleton(self):
+        ret = self.module["segment_runner.get_skeleton"]()
+        return ret
+
+    """
+    Execute the bytecodes in the segment sequentially.
+
+    Parameters
+    ----------
+    segment_id:
+        Target segment id
+
+    Returns
+    -------
+    ret:
+        Return the executed segment id. If it failed, it returns -1.
+    """
+    def run(self, segment_id: int) -> int:
+        ret = self.module["segment_runner.run"](segment_id)
+        return ret 
+        
 @register_func("vm.builtin.debug_print")
 def _print(lineo: str, array) -> None:
     print(f"{lineo}: shape = {array.shape}, dtype = {array.dtype}, data =\n{array}")

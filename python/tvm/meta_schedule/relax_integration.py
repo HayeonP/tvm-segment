@@ -285,7 +285,7 @@ def _tune_relax(
     database: Database.DatabaseType = "json",
     cost_model: CostModel.CostModelType = "xgb",
     measure_callbacks: MeasureCallback.CallbackListType = "default",
-    task_scheduler: TaskScheduler.TaskSchedulerType = "gradient",
+    task_scheduler: TaskScheduler.TaskSchedulerType = "round-robin", # CHNAGE: deafult = "gradient"
     space: SpaceGenerator.SpaceGeneratorType = "post-order-apply",
     strategy: SearchStrategy.SearchStrategyType = "evolutionary",
     seed: Optional[int] = None,
