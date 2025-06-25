@@ -16,7 +16,6 @@ conda activate tvm20
 
 * Build
 ```shell
-cd tvm
 git submodule update --init --recursive
 mkdir build
 cd tvm/build
@@ -24,5 +23,3 @@ cp ../config.cmake.default config.cmake
 
 cmake .. && cmake --build . --parallel $(nproc)
 ```
-
-

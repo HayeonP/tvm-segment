@@ -32,11 +32,13 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../file_utils.h"
-#include "../meta_data.h"
+#include <tvm/runtime/file_utils.h>
+#include <tvm/runtime/meta_data.h>
 #include "../pack_args.h"
 #include "../thread_storage_scope.h"
 #include "cuda_common.h"
+
+#include <iostream>
 
 namespace tvm {
 namespace runtime {

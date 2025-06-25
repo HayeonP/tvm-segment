@@ -34,7 +34,7 @@
 #include <vector>
 
 #include "../../arith/pattern_match.h"
-#include "../../runtime/meta_data.h"
+#include <tvm/runtime/meta_data.h>
 #include "../../runtime/thread_storage_scope.h"
 #include "../build_common.h"
 

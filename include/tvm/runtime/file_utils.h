@@ -30,7 +30,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "meta_data.h"
+#include <tvm/runtime/meta_data.h>
 
 namespace tvm {
 namespace runtime {

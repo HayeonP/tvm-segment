@@ -74,7 +74,7 @@
 #include <utility>
 #include <vector>
 
-#include "../../runtime/file_utils.h"
+#include <tvm/runtime/file_utils.h>
 #include "../../runtime/library_module.h"
 #include "codegen_blob.h"
 #include "codegen_cpu.h"

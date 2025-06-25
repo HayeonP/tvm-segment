@@ -35,7 +35,7 @@
 #include <utility>
 #include <vector>
 
-#include "runtime_base.h"
+#include <tvm/runtime/runtime_base.h>
 
 namespace tvm {
 namespace runtime {

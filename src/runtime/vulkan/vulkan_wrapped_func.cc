@@ -23,7 +23,7 @@
 
 #include <utility>
 
-#include "../file_utils.h"
+#include <tvm/runtime/file_utils.h>
 #include "vulkan_device_api.h"
 
 namespace tvm {

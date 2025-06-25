@@ -37,7 +37,7 @@
 #include <iostream>
 #include <string>
 
-#include "../../src/runtime/meta_data.h"
+#include <tvm/runtime/meta_data.h>
 #include "../../src/runtime/workspace_pool.h"
 
 namespace tvm {

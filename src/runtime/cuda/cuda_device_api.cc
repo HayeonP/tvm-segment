@@ -29,6 +29,7 @@
 #include <tvm/runtime/registry.h>
 
 #include <cstring>
+#include <iostream>
 
 #include "cuda_common.h"
 

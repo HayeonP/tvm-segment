@@ -32,7 +32,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../../file_utils.h"
+#include <tvm/runtime/file_utils.h>
 #include "../json/json_node.h"
 #include "../json/json_runtime.h"
 

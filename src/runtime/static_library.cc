@@ -31,7 +31,7 @@
 
 #include <iostream>
 
-#include "file_utils.h"
+#include <tvm/runtime/file_utils.h>
 
 namespace tvm {
 namespace runtime {

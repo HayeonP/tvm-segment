@@ -27,8 +27,8 @@
 #include <array>
 #include <mutex>
 #include <string>
-#include "../file_utils.h"
-#include "../meta_data.h"
+#include <tvm/runtime/file_utils.h>
+#include <tvm/runtime/meta_data.h>
 #include "../pack_args.h"
 #include "../thread_storage_scope.h"
 #include "metal_common.h"

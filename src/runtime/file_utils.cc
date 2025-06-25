@@ -20,13 +20,13 @@
 /*!
  * \file file_utils.cc
  */
-#include "file_utils.h"
 
 #include <dmlc/json.h>
 #include <dmlc/memory_io.h>
 #include <tvm/runtime/logging.h>
 #include <tvm/runtime/registry.h>
 #include <tvm/runtime/serializer.h>
+#include <tvm/runtime/file_utils.h>
 
 #include <fstream>
 #include <unordered_map>
@@ -185,12 +185,14 @@ Map<String, NDArray> LoadParams(const std::string& param_blob) {
   dmlc::MemoryStringStream strm(const_cast<std::string*>(&param_blob));
   return LoadParams(&strm);
 }
+
 Map<String, NDArray> LoadParams(dmlc::Stream* strm) {
   Map<String, NDArray> params;
   uint64_t header, reserved;
+  
   ICHECK(strm->Read(&header)) << "Invalid parameters file format";
   ICHECK(header == kTVMNDArrayListMagic) << "Invalid parameters file format";
-  ICHECK(strm->Read(&reserved)) << "Invalid parameters file format";
+  ICHECK(strm->Read(&reserved)) << "Invalid parameters file format";  
 
   std::vector<std::string> names;
   ICHECK(strm->Read(&names)) << "Invalid parameters file format";

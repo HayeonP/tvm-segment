@@ -33,7 +33,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../file_utils.h"
+#include <tvm/runtime/file_utils.h>
 #include "./utils.h"
 
 namespace tvm {

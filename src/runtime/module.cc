@@ -28,7 +28,7 @@
 #include <cstring>
 #include <unordered_set>
 
-#include "file_utils.h"
+#include <tvm/runtime/file_utils.h>
 
 namespace tvm {
 namespace runtime {
@@ -90,6 +90,7 @@ Module Module::LoadFromFile(const String& file_name, const String& format) {
                        << "Ensure that you have loaded the correct runtime code, and"
                        << "that you are on the correct hardware architecture.";
   Module m = (*f)(file_name, format);
+  
   return m;
 }
 

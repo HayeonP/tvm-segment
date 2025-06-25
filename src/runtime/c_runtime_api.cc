@@ -39,7 +39,7 @@
 #include <variant>
 
 #include "object_internal.h"
-#include "runtime_base.h"
+#include <tvm/runtime/runtime_base.h>
 
 namespace tvm {
 namespace runtime {

@@ -22,7 +22,7 @@
 #include <dmlc/memory_io.h>
 #include <tvm/runtime/registry.h>
 
-#include "../file_utils.h"
+#include <tvm/runtime/file_utils.h>
 #include "vulkan_wrapped_func.h"
 
 namespace tvm {

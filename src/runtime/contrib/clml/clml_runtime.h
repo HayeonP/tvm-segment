@@ -43,7 +43,7 @@
 #include <utility>
 #include <vector>
 
-#include "../../file_utils.h"
+#include <tvm/runtime/file_utils.h>
 #include "../../opencl/opencl_common.h"
 #include "../../thread_storage_scope.h"
 #include "../json/json_node.h"

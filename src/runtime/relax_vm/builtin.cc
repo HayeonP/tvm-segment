@@ -32,7 +32,7 @@
 #include <tvm/runtime/relax_vm/bytecode.h>
 #include <tvm/runtime/relax_vm/vm.h>
 
-#include "../runtime_base.h"
+#include <tvm/runtime/runtime_base.h>
 
 namespace tvm {
 namespace runtime {

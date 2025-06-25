@@ -27,7 +27,7 @@
 #include <tvm/runtime/ndarray.h>
 #include <tvm/runtime/registry.h>
 
-#include "runtime_base.h"
+#include <tvm/runtime/runtime_base.h>
 #include "tvm/runtime/data_type.h"
 
 extern "C" {

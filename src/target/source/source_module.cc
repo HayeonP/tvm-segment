@@ -35,7 +35,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "../../runtime/file_utils.h"
+#include <tvm/runtime/file_utils.h>
 #include "codegen_source_base.h"
 
 namespace tvm {
