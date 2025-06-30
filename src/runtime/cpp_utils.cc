@@ -33,7 +33,7 @@ bool NaturalSortCompare(const std::string& a, const std::string& b) {
 }
 
 Module LoadExecutableModule(std::string& path){
-    return Module::LoadFromFile("resnet18.so");    
+    return Module::LoadFromFile(path);    
 }
 
 std::vector<NDArray> LoadParamsAsNDArrayList(std::string& path) {
