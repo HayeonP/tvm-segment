@@ -1,5 +1,5 @@
 
-1. Setup conda environment
+* Setup conda environment
     ```bash
     conda create -n tvm -c conda-forge \
     "llvmdev=15" \
@@ -8,7 +8,7 @@
     python=3.10
     ```
 
-2. Build TVM
+* Build TVM
     ```bash
     # At the workspace direcotry
     conda activate tvm
