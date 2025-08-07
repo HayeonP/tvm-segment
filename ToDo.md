@@ -1,0 +1,3 @@
+- Cannot execute tuning pipeline on Orin
+- Segment runner for python
+- Portability with MLC-LLM

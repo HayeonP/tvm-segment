@@ -2007,10 +2007,15 @@ class BaseFXGraphImporter(metaclass=abc.ABCMeta):
             i = 0
             shape = self.shape_of(x)
             non_ellipsis_cnt = 0
-            for index in node.args[1]:
+            # Patch: consider case where node.args[1] is a single int
+            indices = node.args[1]
+            if not isinstance(indices, (list, tuple)):
+                indices = [indices]
+            
+            for index in indices:
                 if isinstance(index, (int, slice, torch.fx.Node)):
                     non_ellipsis_cnt += 1
-            for index in node.args[1]:
+            for index in indices:
                 if isinstance(index, int):
                     stride_begin.append(index)
                     stride_end.append(index + 1)

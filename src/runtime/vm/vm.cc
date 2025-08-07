@@ -26,7 +26,6 @@
 #include <tvm/runtime/nvtx.h>
 #include <tvm/runtime/profiling.h>
 #include <tvm/runtime/vm/vm.h>
-
 #include <optional>
 #include <thread>
 
@@ -212,6 +211,21 @@ class VirtualMachineImpl : public VirtualMachine {
   int _GetFunctionArity(std::string func_name);
   std::string _GetFunctionParamName(std::string func_name, int index);
   ffi::Function _LookupFunction(const String& name);
+  
+  // HayeonP -------------------
+  String GetRuntimeSequence();
+  void InitPersistentFrame();
+  void SetInputToPersistentFrame(std::vector<RegType> input);
+  void InvokeSegment(std::vector<int> segment);
+  Array<NDArray> GetOutputFromPersistentFrame();
+  
+
+  String _GetRuntimeSequence();
+  void _InitPersistentFrame();
+  void _SetInputToPersistentFrame(ffi::PackedArgs args, ffi::Any* rv);
+  void _InvokeSegment(ffi::PackedArgs args, ffi::Any* rv);
+  void _GetOutputFromPersistentFrame(ffi::PackedArgs args, ffi::Any* rv);
+  // ---------------------------
 
   TVM_MODULE_VTABLE_BEGIN("relax.VirtualMachine");
   TVM_MODULE_VTABLE_ENTRY_PACKED("vm_initialization", &VirtualMachineImpl::_Init);
@@ -226,7 +240,17 @@ class VirtualMachineImpl : public VirtualMachine {
                                  &VirtualMachineImpl::_SetInputWithParamModule);
   TVM_MODULE_VTABLE_ENTRY("get_function_arity", &VirtualMachineImpl::_GetFunctionArity);
   TVM_MODULE_VTABLE_ENTRY("get_function_param_name", &VirtualMachineImpl::_GetFunctionParamName);
+  
+  TVM_MODULE_VTABLE_ENTRY("get_runtime_sequence", &VirtualMachineImpl::_GetRuntimeSequence); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY("init_persistent_frame", &VirtualMachineImpl::_InitPersistentFrame); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY_PACKED("set_input_to_persistent_frame", &VirtualMachineImpl::_SetInputToPersistentFrame); // HayeonP  
+  TVM_MODULE_VTABLE_ENTRY_PACKED("invoke_semgnet", &VirtualMachineImpl::_InvokeSegment); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY_PACKED("get_output_from_persistent_frame", &VirtualMachineImpl::_GetOutputFromPersistentFrame); // HayeonP
+
+  
+
   TVM_MODULE_VTABLE_END_WITH_DEFAULT(&VirtualMachineImpl::_LookupFunction);
+
 
   //--------------------------------------------------
   // Additional support arguments functions for VM
@@ -449,6 +473,12 @@ class VirtualMachineImpl : public VirtualMachine {
   RegType return_value_;
   /*!\ brief instrument function. */
   ffi::Function instrument_ = nullptr;
+
+  // HayeonP
+  /*! \brief List whose entry is program counters for a segment */ 
+  std::vector< std::vector<int> > per_segment_pc_list_;
+  bool are_segments_initialized_ = false;
+  std::unique_ptr<VMFrame> persistent_frame_; // Non-destruct VMFrames for segment runner
 };
 
 void VirtualMachineImpl::LoadExecutable(ObjectPtr<VMExecutable> exec) {
@@ -458,6 +488,7 @@ void VirtualMachineImpl::LoadExecutable(ObjectPtr<VMExecutable> exec) {
 
 void VirtualMachineImpl::Init(const std::vector<Device>& devices,
                               const std::vector<AllocatorType>& alloc_types) {
+  
   ICHECK_EQ(devices.size(), alloc_types.size());
 
   this->devices.reserve(devices.size());
@@ -692,7 +723,7 @@ RegType VirtualMachineImpl::InvokeBytecode(Index gf_idx, const std::vector<RegTy
 
 void VirtualMachineImpl::InitFuncPool() {
   func_pool_.resize(exec_->func_table.size());
-
+  
   for (size_t func_index = 0; func_index < exec_->func_table.size(); ++func_index) {
     const VMFuncInfo& info = exec_->func_table[func_index];
     if (info.kind == VMFuncInfo::FuncKind::kPackedFunc) {
@@ -854,8 +885,10 @@ ObjectPtr<VirtualMachine> VirtualMachine::Create() { return make_object<VirtualM
 
 void VirtualMachineImpl::_Init(ffi::PackedArgs args, ffi::Any* rv) {
   ICHECK_EQ(args.size() % 3, 0);
+
   std::vector<Device> devices;
   std::vector<AllocatorType> alloc_types;
+
   for (int i = 0; i < args.size(); i += 3) {
     int device_type = args[i].cast<int>();
     int device_id = args[i + 1].cast<int>();
@@ -863,6 +896,7 @@ void VirtualMachineImpl::_Init(ffi::PackedArgs args, ffi::Any* rv) {
     devices.push_back(Device{DLDeviceType(device_type), device_id});
     alloc_types.push_back(AllocatorType(alloc_type));
   }
+
   this->Init(devices, alloc_types);
 }
 
@@ -960,6 +994,181 @@ ffi::Function VirtualMachineImpl::_LookupFunction(const String& name) {
     });
   }
   return ffi::Function(nullptr);
+}
+
+String VirtualMachineImpl::GetRuntimeSequence(){ // HayeonP
+  std::string output_str;
+  
+  auto it = this->exec_->func_map.find("main");
+  if (it == exec_->func_map.end()) {
+    LOG(FATAL) << "ValueError: Cannot find main function";    
+    return output_str;
+  }
+
+  Index gf_idx = it->second;
+  const VMFuncInfo& gfunc = exec_->func_table[gf_idx];
+  auto guard = PushFrame(this->pc_, gfunc);
+  VMFrame* curr_frame = frames_.back().get();
+
+  pc_ = gfunc.start_instr;
+
+  bool is_finished = false;
+  while (!is_finished) {
+    Instruction instr = exec_->GetInstruction(pc_);
+    switch (instr.op) {
+      case Opcode::Call: {
+        std::ostringstream oss;
+        oss << "pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx) << std::endl;
+        output_str += oss.str();
+        pc_++;
+        break;
+      }
+      case Opcode::Ret: {
+        is_finished = true;
+        break;
+      }
+      case Opcode::Goto: {
+        pc_ += instr.pc_offset;
+        break;
+      }
+      case Opcode::If: {
+        int64_t cond_val = ReadRegister(curr_frame, instr.cond).cast<int64_t>();
+        if (cond_val != 0) {
+          pc_++;
+        } else {
+          ICHECK_GT(instr.false_offset, 1);
+          pc_ += instr.false_offset;
+        }
+        break;
+      }
+    }
+  }
+
+  return output_str;
+}
+
+String VirtualMachineImpl::_GetRuntimeSequence(){ // HayeonP
+  return this->GetRuntimeSequence();
+}
+
+void VirtualMachineImpl::InitPersistentFrame(){ // HayeonP
+  auto main_it = exec_->func_map.find("main");
+  Index main_func_idx = main_it->second;
+  const VMFuncInfo& main_func = exec_->func_table[main_func_idx];
+  pc_ = main_func.start_instr;
+
+  persistent_frame_ = std::make_unique<VMFrame>(main_func_idx, main_func.register_file_size);
+}
+
+void VirtualMachineImpl::_InitPersistentFrame(){ // HayeonP
+  return this->InitPersistentFrame();
+}
+
+// HayeonP
+void VirtualMachineImpl::SetInputToPersistentFrame(std::vector<RegType> input){
+  if(!persistent_frame_){
+    std::cout<<"InvalidFrame: persistent_frame doesn't exist"<<std::endl;
+    return;
+  }
+  
+  VMFrame* curr_frame = persistent_frame_.get();
+  
+  for(size_t i = 0; i < input.size(); ++i) {
+    WriteRegister(curr_frame, i, input[i]);
+  }
+
+  return;
+}
+
+// HayeonP
+void VirtualMachineImpl::_SetInputToPersistentFrame(ffi::PackedArgs args, ffi::Any* rv){
+  std::vector<RegType> input(args.size());
+  
+  for (int i = 0; i < args.size(); ++i){
+    input[i] = ConvertArgToDevice(args[i], devices[0], allocators[0]);
+  }
+
+  this->SetInputToPersistentFrame(input);
+
+  return;
+}
+
+// HayeonP
+void VirtualMachineImpl::InvokeSegment(const std::vector<int> segment){
+  VMFrame* curr_frame = persistent_frame_.get();
+  
+  for(auto pc : segment){ // Start loop
+    pc_ = pc;
+    ICHECK_LT(static_cast<size_t>(pc_), exec_->instr_offset.size()) << "run into invalid section";    
+    Instruction instr = exec_->GetInstruction(pc_);
+
+    switch (instr.op) {
+      case Opcode::Call: {
+        this->RunInstrCall(curr_frame, instr);
+        break;
+      }
+      case Opcode::Ret: {
+        std::cout<<"RunSegmentError: Reached a return before execution was completed"<<std::endl;
+        exit(0);
+        return;
+      }
+      case Opcode::Goto: {
+        pc_ += instr.pc_offset;
+        break;
+      }
+      case Opcode::If: {
+        int64_t cond_val = ReadRegister(curr_frame, instr.cond).cast<int64_t>();
+        if (cond_val != 0) {
+          pc_++;
+        } else {
+          ICHECK_GT(instr.false_offset, 1);
+          pc_ += instr.false_offset;
+        }
+        break;
+      }
+    } 
+  }// End loop  
+
+  return;
+}
+
+// HayeonP
+void VirtualMachineImpl::_InvokeSegment(ffi::PackedArgs args, ffi::Any* rv){
+  std::vector<int> segment(args.size());
+  for(int i = 0; i < args.size(); ++i){
+    int pc = args[i].cast<int>();
+    segment[i] = pc;
+  }  
+
+  this->InvokeSegment(segment);
+
+  return;
+}
+
+// HayeonP
+Array<NDArray> VirtualMachineImpl::GetOutputFromPersistentFrame(){
+  Instruction instr = exec_->GetInstruction(pc_);
+
+  if(instr.op != Opcode::Ret) {
+    std::cout<<"OutputError: Inference isn't finished"<<std::endl;
+  }
+  
+  // If we have hit the point from which we started
+  // running, we should return to the caller breaking
+  // the dispatch loop.
+  VMFrame* curr_frame = persistent_frame_.get();
+  return_value_ = ReadRegister(curr_frame, instr.result);
+
+  auto arr = Downcast<ffi::Array<ffi::NDArray>>(return_value_);
+
+  return std::vector<NDArray>(arr.begin(), arr.end());
+}
+
+// HayeonP
+void VirtualMachineImpl::_GetOutputFromPersistentFrame(ffi::PackedArgs args, ffi::Any* rv){
+  *rv = this->GetOutputFromPersistentFrame();
+
+  return;
 }
 
 //----------------------------------------------------------------
