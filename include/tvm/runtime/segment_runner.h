@@ -16,7 +16,7 @@ public:
     SegmentRunner(const Module& exec, Device device);
 
     std::string GetRuntimeSequence();
-    int Load(const std::string runtime_sequence_path);
+    int Load(const std::string runtime_sequence);
     void SetInput(std::vector<NDArray>& input);
     void SetInputWithParams(std::vector<NDArray>& input, std::vector<NDArray>& params);
     std::vector<NDArray> GetOutput();

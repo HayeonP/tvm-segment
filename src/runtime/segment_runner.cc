@@ -63,8 +63,8 @@ std::string SegmentRunner::GetRuntimeSequence(){
   return runtime_sequence;
 }
 
-int SegmentRunner::Load(const std::string runtime_sequence_path){
-  if(runtime_sequence_path.empty()){
+int SegmentRunner::Load(const std::string runtime_sequence){
+  if(runtime_sequence.empty()){
     std::cout<<"ParsingError: Runtime sequence is empty"<<std::endl;
     return -1;
   }
@@ -75,7 +75,7 @@ int SegmentRunner::Load(const std::string runtime_sequence_path){
   };
 
   // Preprocessing (trimming, remove empty lines)
-  std::istringstream iss(runtime_sequence_path);
+  std::istringstream iss(runtime_sequence);
   std::string line;  
   std::vector<SegmentsInfoLine> runtime_sequence_lines;
 
@@ -195,7 +195,7 @@ void SegmentRunner::Execute(const int segment_id){
   }
 
   if(segment_id > prev_segment_id + 1){
-    std::cout<<"SegmentSkipWarning: Segment is skipped (segment_id: "<<segment_id<<", prev_segment_id: "<<prev_segment_id <<")"<<std::endl;
+    std::cout<<"SegmentSkipWarning: Segments are skipped (segment_id: "<<segment_id<<", prev_segment_id: "<<prev_segment_id <<")"<<std::endl;
   }
   
   std::vector<AnyView> segment;
@@ -213,14 +213,14 @@ void SegmentRunner::Execute(const int segment_id){
 
 std::vector<NDArray> SegmentRunner::GetOutput(){
   ffi::Function get_output_func = vm_module_->GetFunction("get_output_from_persistent_frame", false);
-  ffi::Any set_input_rv = get_output_func();
+  ffi::Any get_output_rv = get_output_func();
   
-  auto output_array = set_input_rv.try_cast<tvm::Array<NDArray>>();
-  if(!output_array.has_value()){
-    return std::vector<NDArray>();
-  }
+  auto output_array = Downcast<Array<NDArray>>(get_output_rv);
 
-  std::vector<NDArray> output(output_array->begin(), output_array->end());
+  std::vector<NDArray> output;
+  for (auto& nd_array : output_array){
+    output.push_back(nd_array);
+  }
 
   return output;
 }

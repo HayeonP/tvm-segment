@@ -217,7 +217,7 @@ class VirtualMachineImpl : public VirtualMachine {
   void InitPersistentFrame();
   void SetInputToPersistentFrame(std::vector<RegType> input);
   void InvokeSegment(std::vector<int> segment);
-  Array<NDArray> GetOutputFromPersistentFrame();
+  Array<Any> GetOutputFromPersistentFrame();
   
 
   String _GetRuntimeSequence();
@@ -1146,7 +1146,7 @@ void VirtualMachineImpl::_InvokeSegment(ffi::PackedArgs args, ffi::Any* rv){
 }
 
 // HayeonP
-Array<NDArray> VirtualMachineImpl::GetOutputFromPersistentFrame(){
+Array<Any> VirtualMachineImpl::GetOutputFromPersistentFrame(){
   Instruction instr = exec_->GetInstruction(pc_);
 
   if(instr.op != Opcode::Ret) {
@@ -1159,9 +1159,9 @@ Array<NDArray> VirtualMachineImpl::GetOutputFromPersistentFrame(){
   VMFrame* curr_frame = persistent_frame_.get();
   return_value_ = ReadRegister(curr_frame, instr.result);
 
-  auto arr = Downcast<ffi::Array<ffi::NDArray>>(return_value_);
+  auto arr = Downcast<Array<Any>>(return_value_);
 
-  return std::vector<NDArray>(arr.begin(), arr.end());
+  return arr;
 }
 
 // HayeonP
