@@ -214,14 +214,14 @@ class VirtualMachineImpl : public VirtualMachine {
   
   // HayeonP -------------------
   String GetRuntimeSequence();
-  void InitPersistentFrame();
+  void InitPersistentFrames();
   void SetInputToPersistentFrame(std::vector<RegType> input);
   void InvokeSegment(std::vector<int> segment);
-  Array<Any> GetOutputFromPersistentFrame();
-  
+  ffi::Any GetOutputFromPersistentFrame();
+  void RunInstrCallForSegment(VMFrame*& curr_frame, Instruction instr);
 
   String _GetRuntimeSequence();
-  void _InitPersistentFrame();
+  void _InitPersistentFrames();
   void _SetInputToPersistentFrame(ffi::PackedArgs args, ffi::Any* rv);
   void _InvokeSegment(ffi::PackedArgs args, ffi::Any* rv);
   void _GetOutputFromPersistentFrame(ffi::PackedArgs args, ffi::Any* rv);
@@ -242,7 +242,7 @@ class VirtualMachineImpl : public VirtualMachine {
   TVM_MODULE_VTABLE_ENTRY("get_function_param_name", &VirtualMachineImpl::_GetFunctionParamName);
   
   TVM_MODULE_VTABLE_ENTRY("get_runtime_sequence", &VirtualMachineImpl::_GetRuntimeSequence); // HayeonP
-  TVM_MODULE_VTABLE_ENTRY("init_persistent_frame", &VirtualMachineImpl::_InitPersistentFrame); // HayeonP
+  TVM_MODULE_VTABLE_ENTRY("init_persistent_frame", &VirtualMachineImpl::_InitPersistentFrames); // HayeonP
   TVM_MODULE_VTABLE_ENTRY_PACKED("set_input_to_persistent_frame", &VirtualMachineImpl::_SetInputToPersistentFrame); // HayeonP  
   TVM_MODULE_VTABLE_ENTRY_PACKED("invoke_semgnet", &VirtualMachineImpl::_InvokeSegment); // HayeonP
   TVM_MODULE_VTABLE_ENTRY_PACKED("get_output_from_persistent_frame", &VirtualMachineImpl::_GetOutputFromPersistentFrame); // HayeonP
@@ -478,7 +478,7 @@ class VirtualMachineImpl : public VirtualMachine {
   /*! \brief List whose entry is program counters for a segment */ 
   std::vector< std::vector<int> > per_segment_pc_list_;
   bool are_segments_initialized_ = false;
-  std::unique_ptr<VMFrame> persistent_frame_; // Non-destruct VMFrames for segment runner
+  std::vector<std::unique_ptr<VMFrame>> persistent_frames_; // Non-destruct VMFrames for segment runner
 };
 
 void VirtualMachineImpl::LoadExecutable(ObjectPtr<VMExecutable> exec) {
@@ -561,6 +561,7 @@ void VirtualMachineImpl::InvokeClosurePacked(const ObjectRef& closure_or_packedf
     packed->CallPacked(args.data(), args.size(), rv);
     return;
   }
+
   // run closure call.
   auto* clo = closure_or_packedfunc.as<VMClosureObj>();
   ICHECK(clo != nullptr) << "Function expects a closure or ffi::Function ";
@@ -652,6 +653,7 @@ Optional<VMClosure> VirtualMachineImpl::GetClosureInternal(const String& func_na
   } else {
     ICHECK(finfo.kind == VMFuncInfo::FuncKind::kVMTIRFunc)
         << "Cannot support closure with function kind " << static_cast<int>(finfo.kind);
+
     ffi::Function tir_func = GetFuncFromImports("__vmtir__" + finfo.name);
     ICHECK(tir_func != nullptr) << "Cannot find underlying compiled tir function of VMTIRFunc "
                                 << finfo.name;
@@ -838,6 +840,7 @@ void VirtualMachineImpl::RunLoop() {
   while (true) {
     ICHECK_LT(static_cast<size_t>(pc_), exec_->instr_offset.size()) << "run into invalid section";
     Instruction instr = exec_->GetInstruction(pc_);
+    
     switch (instr.op) {
       case Opcode::Call: {
         this->RunInstrCall(curr_frame, instr);
@@ -854,6 +857,7 @@ void VirtualMachineImpl::RunLoop() {
         } else {
           // return from a local call.
           // Update the current frame to be the parent frame.
+          
           VMFrame* parent_frame = frames_.end()[-2].get();
           WriteRegister(parent_frame, caller_return_register, return_value_);
         }
@@ -1005,40 +1009,68 @@ String VirtualMachineImpl::GetRuntimeSequence(){ // HayeonP
     return output_str;
   }
 
-  Index gf_idx = it->second;
-  const VMFuncInfo& gfunc = exec_->func_table[gf_idx];
-  auto guard = PushFrame(this->pc_, gfunc);
-  VMFrame* curr_frame = frames_.back().get();
+  Index main_func_idx = it->second;
+  const VMFuncInfo& main_func = exec_->func_table[main_func_idx];
 
-  pc_ = gfunc.start_instr;
-
+  pc_ = main_func.start_instr;
+  std::vector<std::string> func_name_stack;
+  std::vector<Index> return_pc_stack;
+  func_name_stack.push_back("main");
+  return_pc_stack.push_back(-1);
   bool is_finished = false;
   while (!is_finished) {
     Instruction instr = exec_->GetInstruction(pc_);
     switch (instr.op) {
       case Opcode::Call: {
-        std::ostringstream oss;
-        oss << "pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx) << std::endl;
-        output_str += oss.str();
-        pc_++;
+        std::ostringstream oss;        
+
+        auto closure_or_packedfunc = func_pool_[instr.func_idx].cast<ObjectRef>();
+        if(closure_or_packedfunc.as<ffi::Function::ContainerType>()){ // invoke packed func
+          oss << "pc = " << pc_ << ", ["<< func_name_stack.back()<< "] execute: " << GetFuncName(instr.func_idx) << std::endl;
+          output_str += oss.str();          
+          
+          pc_++;
+        }
+        else{ // invoke new closure
+          oss << "pc = " << pc_ << ", ["<< func_name_stack.back()<< "] call: " << GetFuncName(instr.func_idx) << std::endl;
+          output_str += oss.str();
+          func_name_stack.push_back(GetFuncName(instr.func_idx));
+
+          const VMFuncInfo& new_closure_func = exec_->func_table[instr.func_idx];
+          return_pc_stack.push_back(pc_ + 1);
+          pc_ = new_closure_func.start_instr;
+        }
+
         break;
       }
       case Opcode::Ret: {
-        is_finished = true;
+        if(return_pc_stack.back() == -1){ // MAIN
+          is_finished = true;
+        }
+        else{
+          std::ostringstream oss;
+          oss << "pc = " << pc_ << ", ["<< func_name_stack.back()<< "] return" << std::endl;
+          output_str += oss.str();
+          func_name_stack.pop_back();
+          
+          pc_ = return_pc_stack.back();
+          return_pc_stack.pop_back();
+          
+        }
         break;
       }
       case Opcode::Goto: {
         pc_ += instr.pc_offset;
         break;
       }
-      case Opcode::If: {
-        int64_t cond_val = ReadRegister(curr_frame, instr.cond).cast<int64_t>();
-        if (cond_val != 0) {
-          pc_++;
-        } else {
-          ICHECK_GT(instr.false_offset, 1);
-          pc_ += instr.false_offset;
-        }
+      case Opcode::If: { // Not supported yet
+        // int64_t cond_val = ReadRegister(curr_frame, instr.cond).cast<int64_t>();
+        // if (cond_val != 0) {
+        //   pc++;
+        // } else {
+        //   ICHECK_GT(instr.false_offset, 1);
+        //   pc += instr.false_offset;
+        // }
         break;
       }
     }
@@ -1047,31 +1079,34 @@ String VirtualMachineImpl::GetRuntimeSequence(){ // HayeonP
   return output_str;
 }
 
+
+
 String VirtualMachineImpl::_GetRuntimeSequence(){ // HayeonP
   return this->GetRuntimeSequence();
 }
 
-void VirtualMachineImpl::InitPersistentFrame(){ // HayeonP
+void VirtualMachineImpl::InitPersistentFrames(){ // HayeonP
   auto main_it = exec_->func_map.find("main");
   Index main_func_idx = main_it->second;
   const VMFuncInfo& main_func = exec_->func_table[main_func_idx];
   pc_ = main_func.start_instr;
 
-  persistent_frame_ = std::make_unique<VMFrame>(main_func_idx, main_func.register_file_size);
+  auto new_frame = std::make_unique<VMFrame>(pc_, main_func.register_file_size);
+  persistent_frames_.push_back(std::move(new_frame));
 }
 
-void VirtualMachineImpl::_InitPersistentFrame(){ // HayeonP
-  return this->InitPersistentFrame();
+void VirtualMachineImpl::_InitPersistentFrames(){ // HayeonP
+  return this->InitPersistentFrames();
 }
 
 // HayeonP
 void VirtualMachineImpl::SetInputToPersistentFrame(std::vector<RegType> input){
-  if(!persistent_frame_){
+  if(persistent_frames_.empty()){
     std::cout<<"InvalidFrame: persistent_frame doesn't exist"<<std::endl;
     return;
   }
   
-  VMFrame* curr_frame = persistent_frame_.get();
+  VMFrame* curr_frame = persistent_frames_.back().get();
   
   for(size_t i = 0; i < input.size(); ++i) {
     WriteRegister(curr_frame, i, input[i]);
@@ -1095,22 +1130,42 @@ void VirtualMachineImpl::_SetInputToPersistentFrame(ffi::PackedArgs args, ffi::A
 
 // HayeonP
 void VirtualMachineImpl::InvokeSegment(const std::vector<int> segment){
-  VMFrame* curr_frame = persistent_frame_.get();
-  
+  VMFrame* curr_frame = persistent_frames_.back().get();
+
   for(auto pc : segment){ // Start loop
     pc_ = pc;
     ICHECK_LT(static_cast<size_t>(pc_), exec_->instr_offset.size()) << "run into invalid section";    
-    Instruction instr = exec_->GetInstruction(pc_);
-
+    Instruction instr = exec_->GetInstruction(pc_);    
     switch (instr.op) {
-      case Opcode::Call: {
-        this->RunInstrCall(curr_frame, instr);
+      case Opcode::Call: {      
+
+        //this->RunInstrCall(curr_frame, instr);
+        this->RunInstrCallForSegment(curr_frame, instr);
         break;
       }
-      case Opcode::Ret: {
-        std::cout<<"RunSegmentError: Reached a return before execution was completed"<<std::endl;
-        exit(0);
-        return;
+      case Opcode::Ret: {       
+        // From end of RunInstrCall because segment invocation cannot use nested execution flow
+        // save the return value to the register
+        // saving to special register is a NOP
+        return_value_ = ReadRegister(curr_frame, instr.result);
+        RegName caller_return_register = curr_frame->caller_return_register;
+        if(persistent_frames_.size() == 1){
+          std::cout<<"RunSegmentError: Reached a return before execution was completed"<<std::endl;
+          exit(0);
+          return;
+        }
+
+
+        // Pop frame
+        VMFrame* parent_frame = persistent_frames_.end()[-2].get();
+        WriteRegister(parent_frame, caller_return_register, return_value_);
+        
+        persistent_frames_.back()->Clear();
+        persistent_frames_.pop_back();
+        
+        curr_frame = persistent_frames_.back().get();
+
+        break;
       }
       case Opcode::Goto: {
         pc_ += instr.pc_offset;
@@ -1133,6 +1188,85 @@ void VirtualMachineImpl::InvokeSegment(const std::vector<int> segment){
 }
 
 // HayeonP
+void VirtualMachineImpl::RunInstrCallForSegment(VMFrame*& curr_frame, Instruction instr) {
+  DLOG(INFO) << "\n  pc = " << pc_ << ", execute: " << GetFuncName(instr.func_idx);
+  int args_begin_offset = instrument_ != nullptr ? 4 : 0;
+  // Use the call arg stack from the current frame to increase reuse
+  // and avoid re-allocation
+  curr_frame->call_args.resize(args_begin_offset + instr.num_args);
+
+  // NOTE: no changes and resize to those vector ref(otherwise can leads to segfault)
+  //       in the remainder part of the function.
+  std::vector<ffi::AnyView>& call_args = curr_frame->call_args;
+
+  for (Index i = 0; i < instr.num_args; ++i) {
+    Instruction::Arg arg = instr.args[i];
+    int arg_index = args_begin_offset + i;
+    switch (arg.kind()) {
+      case Instruction::ArgKind::kRegister: {
+        call_args[arg_index] = ReadRegister(curr_frame, arg.value());
+        break;
+      }
+      case Instruction::ArgKind::kImmediate: {
+        call_args[arg_index] = arg.value();
+        break;
+      }
+      case Instruction::ArgKind::kConstIdx: {
+        call_args[arg_index] = this->const_pool_[arg.value()];
+        break;
+      }
+      case Instruction::ArgKind::kFuncIdx: {
+        ICHECK_LT(static_cast<size_t>(arg.value()), this->func_pool_.size());
+        call_args[arg_index] = this->func_pool_[arg.value()];
+        break;
+      }
+      default: {
+        LOG(FATAL) << "ValueError: Unknown argument kind: " << int(arg.kind());
+      }
+    }
+  }
+
+  ffi::Any ret;
+  ffi::PackedArgs args(call_args.data() + args_begin_offset, instr.num_args);
+
+  ICHECK_LT(static_cast<size_t>(instr.func_idx), this->func_pool_.size());
+
+  if (instrument_ == nullptr) { // invoke closure packed를 쪼개놓은 것
+    auto closure_or_packedfunc = func_pool_[instr.func_idx].cast<ObjectRef>();
+    if (auto* packed = closure_or_packedfunc.as<ffi::Function::ContainerType>()) { // Packed Func
+      packed->CallPacked(args.data(), args.size(), &ret);
+
+      // save the return value to the register
+      // saving to special register is a NOP
+      if (instr.dst < Instruction::kBeginSpecialReg) {
+        WriteRegister(curr_frame, instr.dst, ret);
+      }
+
+      return;
+    }
+    else{ // Closure
+      auto* clo = closure_or_packedfunc.as<VMClosureObj>();
+
+      auto new_closure_func_it = exec_->func_map.find(clo->func_name);
+      Index new_closure_func_idx = new_closure_func_it->second;
+      const VMFuncInfo& new_closure_func = exec_->func_table[new_closure_func_idx];
+
+      auto new_frame = std::make_unique<VMFrame>(pc_, new_closure_func.register_file_size);
+      persistent_frames_.push_back(std::move(new_frame));
+
+      curr_frame = persistent_frames_.back().get();
+      for(int i = 0; i < args.size(); ++i){
+        WriteRegister(persistent_frames_.back().get(), i, args[i]);
+      }
+      curr_frame->caller_return_register = instr.dst;
+      pc_ = new_closure_func.start_instr;
+    }
+  }
+
+  return;
+}
+
+// HayeonP
 void VirtualMachineImpl::_InvokeSegment(ffi::PackedArgs args, ffi::Any* rv){
   std::vector<int> segment(args.size());
   for(int i = 0; i < args.size(); ++i){
@@ -1146,8 +1280,8 @@ void VirtualMachineImpl::_InvokeSegment(ffi::PackedArgs args, ffi::Any* rv){
 }
 
 // HayeonP
-Array<Any> VirtualMachineImpl::GetOutputFromPersistentFrame(){
-  Instruction instr = exec_->GetInstruction(pc_);
+ffi::Any VirtualMachineImpl::GetOutputFromPersistentFrame(){  
+  Instruction instr = exec_->GetInstruction(++pc_);
 
   if(instr.op != Opcode::Ret) {
     std::cout<<"OutputError: Inference isn't finished"<<std::endl;
@@ -1156,12 +1290,11 @@ Array<Any> VirtualMachineImpl::GetOutputFromPersistentFrame(){
   // If we have hit the point from which we started
   // running, we should return to the caller breaking
   // the dispatch loop.
-  VMFrame* curr_frame = persistent_frame_.get();
+  VMFrame* curr_frame = persistent_frames_.back().get();
+
   return_value_ = ReadRegister(curr_frame, instr.result);
 
-  auto arr = Downcast<Array<Any>>(return_value_);
-
-  return arr;
+  return return_value_;
 }
 
 // HayeonP

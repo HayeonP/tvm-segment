@@ -215,11 +215,15 @@ std::vector<NDArray> SegmentRunner::GetOutput(){
   ffi::Function get_output_func = vm_module_->GetFunction("get_output_from_persistent_frame", false);
   ffi::Any get_output_rv = get_output_func();
   
-  auto output_array = Downcast<Array<NDArray>>(get_output_rv);
-
   std::vector<NDArray> output;
-  for (auto& nd_array : output_array){
-    output.push_back(nd_array);
+  if(get_output_rv.as<ffi::ArrayObj>()){
+    auto output_array = Downcast<Array<NDArray>>(get_output_rv);
+    for (auto& nd_array : output_array){
+      output.push_back(nd_array);
+    }
+  }
+  else{
+    output.push_back(Downcast<NDArray>(get_output_rv));
   }
 
   return output;
